@@ -2,8 +2,8 @@ package net.fusejna;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -13,9 +13,16 @@ import net.fusejna.StructFuseFileInfo.FileInfoWrapper;
 import net.fusejna.StructStat.StatWrapper;
 import net.fusejna.StructStatvfs.StatvfsWrapper;
 import net.fusejna.StructTimeBuffer.TimeBufferWrapper;
-import net.fusejna.types.*;
+import net.fusejna.types.TypeDev;
+import net.fusejna.types.TypeGid;
+import net.fusejna.types.TypeMode;
 import net.fusejna.types.TypeMode.ModeWrapper;
 import net.fusejna.types.TypeMode.NodeType;
+import net.fusejna.types.TypeOff;
+import net.fusejna.types.TypePid;
+import net.fusejna.types.TypeSize;
+import net.fusejna.types.TypeUInt32;
+import net.fusejna.types.TypeUid;
 
 import com.sun.jna.Function;
 import com.sun.jna.Pointer;
@@ -31,7 +38,7 @@ public abstract class FuseFilesystem
 	}
 
 	private static final String defaultFilesystemName = "userfs-";
-	private static final Pattern regexNormalizeFilesystemName = Pattern.compile("[a-zA-Z]");
+	private static final Pattern regexNormalizeFilesystemName = Pattern.compile("[^a-zA-Z]");
 	private final ReentrantLock mountLock = new ReentrantLock();
 	private final AutoUnmountHook unmountHook = new AutoUnmountHook(this);
 	private File mountPoint = null;
