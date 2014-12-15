@@ -5,8 +5,12 @@ bin
 *.class
 *~
 .gradle
+gradle
 *.ipr
 *.iws
 *.iml
 build
 /target
+/.settings/
+/.classpath
+/.project
