@@ -38,6 +38,14 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 		className = filesystem.getClass().getName();
 	}
 
+	@FuseMethod
+	@Override
+	final void _destroy()
+	{
+		destroy();
+		_destroy(this, filesystem);
+	}
+
 	@Override
 	public int access(final String path, final int access)
 	{
@@ -65,14 +73,14 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	}
 
 	@Override
-	public void beforeUnmount(final File mountPoint)
+	public void beforeMount(final File mountPoint)
 	{
-		log("beforeUnmount", new LoggedVoidMethod()
+		log("beforeMount", new LoggedVoidMethod()
 		{
 			@Override
 			public void invoke()
 			{
-				filesystem.beforeUnmount(mountPoint);
+				filesystem.beforeMount(mountPoint);
 			}
 		}, mountPoint.toString());
 	}
@@ -171,7 +179,7 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	@Override
 	public int fsync(final String path, final int datasync, final FileInfoWrapper info)
 	{
-		return log("flush", 0, new LoggedMethod<Integer>()
+		return log("fsync", 0, new LoggedMethod<Integer>()
 		{
 			@Override
 			public Integer invoke()
@@ -197,7 +205,7 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	@Override
 	public int ftruncate(final String path, final long offset, final FileInfoWrapper info)
 	{
-		return log("getattr", 0, new LoggedMethod<Integer>()
+		return log("ftruncate", 0, new LoggedMethod<Integer>()
 		{
 			@Override
 			public Integer invoke()
@@ -247,16 +255,16 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	}
 
 	@Override
-	public int getxattr(final String path, final String xattr, final ByteBuffer buf, final long size, final long position)
+	public int getxattr(final String path, final String xattr, final XattrFiller filler, final long size, final long position)
 	{
 		return log("getxattr", 0, new LoggedMethod<Integer>()
 		{
 			@Override
 			public Integer invoke()
 			{
-				return filesystem.getxattr(path, xattr, buf, size, position);
+				return filesystem.getxattr(path, xattr, filler, size, position);
 			}
-		}, path, xattr, buf, size, position);
+		}, path, xattr, filler, size, position);
 	}
 
 	@Override
@@ -388,19 +396,6 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	}
 
 	@Override
-	public void onMount(final File mountPoint)
-	{
-		log("onMount", new LoggedVoidMethod()
-		{
-			@Override
-			public void invoke()
-			{
-				filesystem.onMount(mountPoint);
-			}
-		}, mountPoint.toString());
-	}
-
-	@Override
 	public int open(final String path, final FileInfoWrapper info)
 	{
 		return log("open", 0, new LoggedMethod<Integer>()
@@ -494,7 +489,7 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	@Override
 	public int removexattr(final String path, final String xattr)
 	{
-		return log("remtoexattr", 0, new LoggedMethod<Integer>()
+		return log("removexattr", 0, new LoggedMethod<Integer>()
 		{
 			@Override
 			public Integer invoke()
@@ -538,16 +533,17 @@ final class LoggedFuseFilesystem extends FuseFilesystem
 	}
 
 	@Override
-	public int setxattr(final String path, final ByteBuffer buf, final long size, final int flags, final long position)
+	public int setxattr(final String path, final String name, final ByteBuffer buf, final long size, final int flags,
+			final int position)
 	{
 		return log("setxattr", 0, new LoggedMethod<Integer>()
 		{
 			@Override
 			public Integer invoke()
 			{
-				return filesystem.setxattr(path, buf, size, flags, position);
+				return filesystem.setxattr(path, name, buf, size, flags, position);
 			}
-		}, path, buf, size, flags, position);
+		}, path, name, buf, size, flags, position);
 	}
 
 	@Override

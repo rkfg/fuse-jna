@@ -29,7 +29,7 @@ import com.sun.jna.Pointer;
 
 public abstract class FuseFilesystem
 {
-	private static @interface FuseMethod
+	static @interface FuseMethod
 	{
 	}
 
@@ -39,6 +39,37 @@ public abstract class FuseFilesystem
 
 	private static final String defaultFilesystemName = "userfs-";
 	private static final Pattern regexNormalizeFilesystemName = Pattern.compile("[^a-zA-Z]");
+
+	/**
+	 * Perform destroy-time cleanup. Takes two {@link FuseFilesystem}s arguments which should be equal in most cases, but may
+	 * not in the case of a wrapped filesystem object for logging ({@link LoggedFuseFilesystem}).
+	 *
+	 * @param mountedFilesystem
+	 *            The {@link FuseFilesystem} object that is actually mounted (the one receiving the destroy call)
+	 * @param userFilesystem
+	 *            The {@link FuseFilesystem} that the user believes is mounted (the one that the user called .mount on)
+	 */
+	final static void _destroy(final FuseFilesystem mountedFilesystem, final FuseFilesystem userFilesystem)
+	{
+		final File oldMountPoint;
+		mountedFilesystem.mountLock.lock();
+		userFilesystem.mountLock.lock();
+		try {
+			if (!mountedFilesystem.isMounted()) {
+				throw new IllegalStateException("destroy called on a non-mounted filesystem");
+			}
+			oldMountPoint = mountedFilesystem.mountPoint;
+			FuseJna.destroyed(mountedFilesystem);
+			userFilesystem.mountPoint = null;
+			mountedFilesystem.mountPoint = null;
+		}
+		finally {
+			userFilesystem.mountLock.unlock();
+			mountedFilesystem.mountLock.unlock();
+		}
+		mountedFilesystem.afterUnmount(oldMountPoint);
+	}
+
 	private final ReentrantLock mountLock = new ReentrantLock();
 	private final AutoUnmountHook unmountHook = new AutoUnmountHook(this);
 	private File mountPoint = null;
@@ -81,9 +112,10 @@ public abstract class FuseFilesystem
 	}
 
 	@FuseMethod
-	final void _destroy()
+	void _destroy()
 	{
 		destroy();
+		_destroy(this, this);
 	}
 
 	@FuseMethod
@@ -143,20 +175,11 @@ public abstract class FuseFilesystem
 			final TypeUInt32 position)
 	{
 		final long sizeValue = size.longValue();
-		if (buffer == null || sizeValue == 0L) {
-			return 0;
-		}
-		final ByteBuffer buf = buffer.getByteBuffer(0, sizeValue);
-		final int result = getxattr(path, xattr, buf, sizeValue, position == null ? 0L : position.longValue());
-		if (result == 0) {
-			try {
-				buf.put((byte) 0);
-			}
-			catch (final BufferOverflowException e) {
-				((ByteBuffer) buf.position(buf.limit() - 1)).put((byte) 0);
-			}
-		}
-		return result;
+		final int positionValue = position == null ? 0 : position.intValue();
+		final XattrFiller filler = new XattrFiller(buffer == null ? null : buffer.getByteBuffer(0, sizeValue), sizeValue,
+				positionValue);
+		final int result = getxattr(path, xattr, filler, sizeValue, position == null ? 0L : position.longValue());
+		return result < 0 ? result : (int) filler.getSize();
 	}
 
 	@FuseMethod
@@ -175,11 +198,10 @@ public abstract class FuseFilesystem
 	final int _listxattr(final String path, final Pointer buffer, final TypeSize size)
 	{
 		final long sizeValue = size.longValue();
-		if (buffer == null || sizeValue == 0L) {
-			return 0;
-		}
-		final XattrListFiller filler = new XattrListFiller(buffer.getByteBuffer(0, sizeValue), sizeValue);
-		return listxattr(path, filler);
+		final XattrListFiller filler = new XattrListFiller(buffer == null ? null : buffer.getByteBuffer(0, sizeValue),
+				sizeValue);
+		final int result = listxattr(path, filler);
+		return result < 0 ? result : (int) filler.requiredSize();
 	}
 
 	@FuseMethod
@@ -294,11 +316,12 @@ public abstract class FuseFilesystem
 	}
 
 	@FuseMethod
-	final int _setxattr(final String path, final Pointer buffer, final TypeSize size, final int flags, final TypeUInt32 position)
+	final int _setxattr(final String path, final String xattr, final Pointer value, final TypeSize size, final int flags,
+			final int position)
 	{
 		final long sizeValue = size.longValue();
-		final ByteBuffer buf = buffer.getByteBuffer(0, sizeValue);
-		return setxattr(path, buf, sizeValue, flags, position == null ? 0L : position.longValue());
+		final ByteBuffer val = value.getByteBuffer(0, sizeValue);
+		return setxattr(path, xattr, val, sizeValue, flags, position);
 	}
 
 	@FuseMethod
@@ -355,7 +378,7 @@ public abstract class FuseFilesystem
 
 	public abstract void afterUnmount(final File mountPoint);
 
-	public abstract void beforeUnmount(final File mountPoint);
+	public abstract void beforeMount(final File mountPoint);
 
 	@UserMethod
 	public abstract int bmap(final String path, final FileInfoWrapper info);
@@ -370,17 +393,21 @@ public abstract class FuseFilesystem
 	public abstract int create(final String path, final ModeWrapper mode, final FileInfoWrapper info);
 
 	/**
-	 * Subclasses may override this to customize the default parameters applied to the stat structure, or to prevent such
-	 * behavior (by overriding this method with an empty one)
-	 * 
-	 * @param stat
-	 *            The
+	 * Populates a {@link StatWrapper} with somewhat-sane, usually-better-than-zero values. Subclasses may override this to
+	 * customize the default parameters applied to the stat structure, or to prevent such behavior in the first place (by
+	 * overriding this method with an empty one).
+	 *
+	 * @param wrapper
+	 *            The StatWrapper object to write to.
+	 * @param uid
+	 *            The UID under which the JVM is running.
+	 * @param gid
+	 *            The GID under which the JVM is running.
 	 */
 	protected void defaultStat(final StatWrapper wrapper, final long uid, final long gid)
 	{
 		// Set some sensible defaults
-		wrapper.setMode(NodeType.DIRECTORY).setAllTimesMillis(System.currentTimeMillis()).nlink(1).uid(FuseJna.getUid())
-				.gid(FuseJna.getGid());
+		wrapper.setMode(NodeType.DIRECTORY).setAllTimesMillis(FuseJna.getInitTime()).nlink(1).uid(uid).gid(gid);
 	}
 
 	@UserMethod
@@ -406,7 +433,7 @@ public abstract class FuseFilesystem
 
 	/**
 	 * Returns the raw fuse_context structure. Only valid when called while a filesystem operation is taking place.
-	 * 
+	 *
 	 * @return The fuse_context structure by reference.
 	 */
 	protected final StructFuseContext getFuseContext()
@@ -419,7 +446,7 @@ public abstract class FuseFilesystem
 
 	/**
 	 * Returns the gid field of the fuse context. Only valid when called while a filesystem operation is taking place.
-	 * 
+	 *
 	 * @return The group ID of the process executing an operation on this filesystem.
 	 */
 	protected TypeGid getFuseContextGid()
@@ -429,7 +456,7 @@ public abstract class FuseFilesystem
 
 	/**
 	 * Returns the pid field of the fuse context. Only valid when called while a filesystem operation is taking place.
-	 * 
+	 *
 	 * @return The process ID of the process executing an operation on this filesystem.
 	 */
 	protected TypePid getFuseContextPid()
@@ -439,7 +466,7 @@ public abstract class FuseFilesystem
 
 	/**
 	 * Returns the uid field of the fuse context. Only valid when called while a filesystem operation is taking place.
-	 * 
+	 *
 	 * @return The user ID of the user running the process executing an operation of this filesystem.
 	 */
 	protected TypeUid getFuseContextUid()
@@ -483,7 +510,7 @@ public abstract class FuseFilesystem
 	}
 
 	@UserMethod
-	public abstract int getxattr(final String path, final String xattr, final ByteBuffer buf, final long size,
+	public abstract int getxattr(final String path, final String xattr, final XattrFiller filler, final long size,
 			final long position);
 
 	@FuseMethod
@@ -539,16 +566,14 @@ public abstract class FuseFilesystem
 		}
 		this.mountPoint = mountPoint;
 		mountLock.unlock();
+		beforeMount(mountPoint);
 		FuseJna.mount(this, mountPoint, blocking);
-		onMount(mountPoint);
 	}
 
 	public final void mount(final String mountPoint) throws FuseException
 	{
 		mount(new File(mountPoint), true);
 	}
-
-	public abstract void onMount(final File mountPoint);
 
 	@UserMethod
 	public abstract int open(final String path, final FileInfoWrapper info);
@@ -589,7 +614,8 @@ public abstract class FuseFilesystem
 	}
 
 	@UserMethod
-	public abstract int setxattr(final String path, final ByteBuffer buf, final long size, final int flags, final long position);
+	public abstract int setxattr(final String path, final String xattr, final ByteBuffer value, final long size,
+			final int flags, final int position);
 
 	@UserMethod
 	public abstract int statfs(final String path, final StatvfsWrapper wrapper);
@@ -605,20 +631,10 @@ public abstract class FuseFilesystem
 
 	public final void unmount() throws IOException, FuseException
 	{
-		mountLock.lock();
 		if (!isMounted()) {
-			return;
+			throw new IllegalStateException("Tried to unmount a filesystem which is not mounted");
 		}
-		try {
-			beforeUnmount(mountPoint);
-			FuseJna.unmount(this);
-			final File oldMountPoint = mountPoint;
-			mountPoint = null;
-			afterUnmount(oldMountPoint);
-		}
-		finally {
-			mountLock.unlock();
-		}
+		FuseJna.unmount(this);
 	}
 
 	@UserMethod
